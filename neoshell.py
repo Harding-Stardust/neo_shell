@@ -14,7 +14,7 @@ Should work the same on Windows, Linux and Mac. Uses Jupyter-console as base
 5. Snabbknappar, F1 - F12 men kanske även andra
 6. Massor av "choice.com" där du har val att göra men om du inte gör något val inom 30 sekunder så väljer console åt dig.
 7. Om console förstår commandot men det kräver sudo så skall du kunna bara fortsätta med sudo istället för att skriva om
-8. Web interface? Fördel är att HTML har väldigt välutvecklad grafiska element.
+8. Web interface? Fördel är att HTML har väldigt välutvecklade grafiska element.
 9. Enkelt kunna pausa en lång körning och sedan ställa in när den skall fortsätta.
 10. Delete file skall märka filen som "can be taken away" (lite som papperskorgen).
 11. Det skall funka BRA på Windows, Linux, Mac
@@ -22,6 +22,20 @@ Should work the same on Windows, Linux and Mac. Uses Jupyter-console as base
 
 
 # TODO: ** in glob does not work atm
+
+# TODO: Process creation
+
+https://docs.python.org/3/library/multiprocessing.html#module-multiprocessing
+
+import shlex, subprocess
+command_line = input()
+/bin/vikings -input eggs.txt -output "spam spam.txt" -cmd "echo '$MONEY'"
+args = shlex.split(command_line)
+print(args)
+['/bin/vikings', '-input', 'eggs.txt', '-output', 'spam spam.txt', '-cmd', "echo '$MONEY'"]
+p = subprocess.Popen(args) # Success!
+
+
 """
 from __future__ import annotations
 
@@ -44,7 +58,7 @@ import time
 
 import numpy as np
 import harding_utils as hu
-import harding_inputtimeout as hinput
+import inputtimeout_harding as ih
 
 use_natsort = True
 try:
@@ -64,7 +78,7 @@ def _repr_type_str(arg_object: Any) -> str:
     ''' Generic repr function that types the type and then the str(object) '''
     return f"{type(arg_object)} which has str(self):\n{str(arg_object)}"
 _file_type = Union[str, pathlib.Path]
-_file_type_extended = Union[str, pathlib.Path, List[str], '_files', None]
+_file_type_extended = Union[str, pathlib.Path, List[str], List[pathlib.Path], '_files', None]
 _directory_type = Union[str, pathlib.Path]
 _directory_type_extended = Union[str, pathlib.Path, None]
 
@@ -75,7 +89,6 @@ class _files:
                        arg_recursive: bool = False,
                        arg_supress_errors: bool = False,
                        arg_debug: bool = False):
-        setattr(_files, '__call__', self.select)
         self.select(arg_file_pattern=arg_file_pattern,
                     arg_recursive=arg_recursive,
                     arg_supress_errors=arg_supress_errors,
@@ -106,16 +119,29 @@ class _files:
         if isinstance(arg_file_pattern, pathlib.Path):
             arg_file_pattern = str(arg_file_pattern)
 
+        if isinstance(arg_file_pattern, list): # TODO: I Don't like this solution. Make it nicer.
+            self._selected = []
+            for l_item in arg_file_pattern:
+                l_new_files = hu.adv_glob(arg_paths=l_item,
+                                          arg_recursive=arg_recursive,
+                                          arg_supress_errors=arg_supress_errors,
+                                          arg_debug=arg_debug)
+                self._selected.extend(l_new_files)
+            self.sort()
+            return len(self)
+
         if isinstance(arg_file_pattern, str) and arg_file_pattern.startswith('http'):
-            _new_files = [arg_file_pattern]
+            l_new_files = [arg_file_pattern]
         else:
-            _new_files = hu.adv_glob(arg_paths=arg_file_pattern,
+            l_new_files = hu.adv_glob(arg_paths=arg_file_pattern,
                                      arg_recursive=arg_recursive,
                                      arg_supress_errors=arg_supress_errors,
                                      arg_debug=arg_debug)
-        self._selected = _new_files
+        self._selected = l_new_files
         self.sort()
         return len(self)
+
+    __call__ = select
 
     def sort(self, arg_sort_by: str = "alphabetical"):
         ''' Sort the files in alhpabetic order.
@@ -184,18 +210,26 @@ class _files:
         try:
             _regexp = re.compile(arg_regexp, flags=arg_regexp_flags) # most useful is probable re.IGNORECASE
         except re.error as regexp_error:
-            hu.log_print(f"Error in the regexp: {regexp_error}. You wrote: '{arg_regexp}'", arg_type="ERROR")
+            hu.log_print(f"Error in the regexp: {regexp_error}. You wrote: '{arg_regexp}'", arg_type="ERROR") # TODO: Error_print?
             return 0
 
         _len_before = len(self._selected)
         self._selected = [file for file in self._selected if not _regexp.fullmatch(file)]
         return _len_before - len(self._selected)
 
-    def save_selection_to_file(self, arg_filename: Union[str, pathlib.Path], arg_as_json: bool = False) -> bool:
-        ''' Save the current file dict to a file '''
-        if arg_as_json:
-            return hu.dict_dump_to_json_file(arg_dict=self._selected, arg_filename=str(arg_filename))
-        return hu.text_write_whole_file(arg_filename=str(arg_filename), arg_text='\n'.join(self._selected))
+    def save_selection_to_file(self, arg_filename: Union[str, pathlib.Path, None] = None, arg_as_json: bool = False) -> bool:
+        ''' Save the current file dict to a file.
+
+            if arg_filename is None, then save a file named neoshell.files.json in the same folder
+            as the first file in the file list
+        '''
+        if not arg_filename:
+            arg_filename = os.path.join(os.path.dirname(self._selected[0]), "neoshell.files.json")
+
+        arg_filename = str(arg_filename)
+        if arg_as_json or arg_filename.endswith('.json'):
+            return hu.dict_dump_to_json_file(arg_dict=self._selected, arg_filename=arg_filename)
+        return hu.text_write_whole_file(arg_filename=arg_filename, arg_text='\n'.join(self._selected))
 
     def load_selection_from_file(self, arg_filename_or_url: Union[str, pathlib.Path]) -> int:
         ''' If you have a file saved with each row is a full file path, then this can load that.
@@ -256,7 +290,7 @@ class _files:
     table = property(fget=_table, doc='Show the selected files in nice table')
 
     def system(self, arg_command: str, arg_dry_run: bool = False) -> bool:
-        ''' Run os.system() on all files. Use the string %file in the command to replace this by the filename
+        ''' Run neoshell.system() Which in the end lands in os.system() on all files. Use the string %file in the command to replace this by the filename
 
             Set the argument arg_dry_run to True to see the commands that would be executed without actually executing them.
         '''
@@ -266,9 +300,11 @@ class _files:
         return len(self._selected)
 
     def __iter__(self) -> Iterator:
+        ''' Allows for code like: for file in neoshell.files: to work '''
         return iter(self._selected)
 
     def __next__(self, arg_iterator: Iterator) -> str:
+        ''' Allows for code like: for file in neoshell.files: to work '''
         return next(arg_iterator)
 
     def __str__(self) -> str:
@@ -280,12 +316,17 @@ class _files:
 files = _files()
 
 class _ls:
+    ''' TODO: Is this sane? '''
     _last_ls: _files = _files()
 
     def __init__(self, arg_pattern: Union[str, None] = None):
         del arg_pattern # TODO: Not used yet
 
-    def list_files(self, arg_file_pattern: Union[str, pathlib.Path, List[str], None] = None, arg_recursive: bool = False, arg_supress_errors: bool = False, arg_debug: bool = False) -> _files:
+    def list_files(self, arg_file_pattern: Union[str, pathlib.Path, List[str], None] = None,
+                         arg_recursive: bool = False,
+                         arg_supress_errors: bool = False,
+                         arg_debug: bool = False
+                   ) -> _files:
         if not arg_file_pattern:
             arg_file_pattern = '*'
         self._last_ls.select(arg_file_pattern=arg_file_pattern, arg_recursive=arg_recursive, arg_supress_errors=arg_supress_errors, arg_debug=arg_debug)
@@ -332,7 +373,7 @@ def cwd(arg_new_current_working_directory: _directory_type_extended = None) -> p
 
 cd = cwd # TODO: Is this a bad idea? Linux user will not like that cd doesn't take them to home. Make it a config
 
-def system(arg_command: str, arg_files: Union[_file_type_extended, _files] = None, arg_dry_run: bool = False) -> bool:
+def system(arg_command: str, arg_files: _file_type_extended = None, arg_dry_run: bool = False) -> bool:
     ''' Run the command in the OS with the os.system()
 
         # TODO: Allow for a List[str] to be passed as arg_command?
@@ -342,7 +383,7 @@ def system(arg_command: str, arg_files: Union[_file_type_extended, _files] = Non
             hu.warning_print(f"No selected files, suggested files are the ones in the current working directory: {cwd()}")
             l_files = _files('*.*')
             hu.timestamped_print(str(l_files))
-            _t = hinput.inputimeout(arg_prompt=hu.timestamped_line('Is this OK? [Y/n]'), arg_timeout=10.0, arg_default_return_value='Y')
+            _t = ih.inputtimeout(arg_prompt=hu.timestamped_line('Is this OK? [Y/n]'), arg_timeout_in_seconds=30.0, arg_default_return_value='Y')
             suggestion_ok = _t == '' or _t.lower().startswith('y')
             hu.timestamped_print(f"It was OK: {suggestion_ok}")
             if not suggestion_ok:
@@ -382,10 +423,27 @@ def home() -> pathlib.Path:
     return pathlib.Path.home()
 
 def exists(arg_path: Union[str, pathlib.Path]) -> bool:
-    ''' Return true if the file/directory exists
-        # TODO: is this function needed?
-    '''
+    ''' Return true if the file/directory exists '''
     return pathlib.Path(arg_path).exists()
+
+def rename_files_to_good_names(arg_files: _file_type_extended, arg_debug: bool = False) -> bool:
+    ''' Rename files to something that is OS safe. See harding_utils.smart_filesystem_safe_path()
+    # TODO: This function is not working
+    '''
+    if not arg_files:
+        hu.error_print("arg_files is NOT a valid file list")
+        return False
+
+    l_files = _files(arg_files) # TODO: Make sure that the _files ctor can handle all kinds of weird input
+    hu.log_print(l_files, arg_debug)
+    for l_file in l_files:
+        l_file = l_file.lower() # TODO: Linux vs Windows in case sensitive filenames? YIKES
+        l_better_filename: str = hu.smart_filesystem_safe_path(l_file).lower()
+        if l_file == l_better_filename:
+            print(f"{l_file} is a good name!")
+        else:
+            print(f"Rename {l_file} --> {l_better_filename}")
+
 
 
 # TODO: def copy()
