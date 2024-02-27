@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+# During development, this autoreload extension is nice!
+# %load_ext autoreload
+# %autoreload explicit
+# %aimport neoshell
+
+
 """
 A new and modern shell
 
@@ -14,11 +20,17 @@ Should work the same on Windows, Linux and Mac. Uses Jupyter-console as base
 5. Snabbknappar, F1 - F12 men kanske även andra
 6. Massor av "choice.com" där du har val att göra men om du inte gör något val inom 30 sekunder så väljer console åt dig.
 7. Om console förstår commandot men det kräver sudo så skall du kunna bara fortsätta med sudo istället för att skriva om
-8. Web interface? Fördel är att HTML har väldigt välutvecklade grafiska element.
+8. Web interface? Fördel är att HTML har väldigt välutvecklade grafiska element. pip install nicegui
 9. Enkelt kunna pausa en lång körning och sedan ställa in när den skall fortsätta.
 10. Delete file skall märka filen som "can be taken away" (lite som papperskorgen).
 11. Det skall funka BRA på Windows, Linux, Mac
 12. Enkelt att plugga in andra språk, som t.ex. python
+13. Fast deletion of files and direcctories by renaming them to something special (that neoshell is filtering out) and then deleting them in own threads/process in the background
+14. Bundled with nice to have like Aria2, curl, wget, rclone and more
+15. Auto update?
+16. Investigate xonsh compatibility
+17. Fast del by moving and deleting in the background, same with move
+
 
 
 # TODO: ** in glob does not work atm
@@ -39,10 +51,10 @@ p = subprocess.Popen(args) # Success!
 """
 from __future__ import annotations
 
-__version__ = 230406205304
+__version__ = 240217_185412
 __author__ = "Harding"
 __description__ = __doc__
-__copyright__ = "Copyright 2023"
+__copyright__ = "Copyright 2024"
 __credits__ = ["Other projects"]
 __license__ = "GPL"
 __maintainer__ = "Harding"
@@ -55,10 +67,13 @@ import pathlib
 import re
 import json
 import time
-
+from types import ModuleType
+from typing import TypeVar
 import numpy as np
 import harding_utils as hu
 import inputtimeout_harding as ih
+
+# from IPython.utils.text import SList
 
 use_natsort = True
 try:
@@ -74,16 +89,69 @@ except ImportError:
     use_prettytable = False
     hu.warning_print("Module prettytable not installed, this module is not required but strongly recommended. pip install prettytable")
 
+STRICT_TYPES = True # If you want to have stict type checking: pip install typeguard
+try:
+    if not STRICT_TYPES:
+        raise ImportError("Skipping the import of typeguard reason: STRICT_TYPES == False")
+    from typeguard import typechecked
+except:
+    STRICT_TYPES = False
+    _T = TypeVar("_T")
+
+    def typechecked(target: _T, **kwargs) -> _T: # type: ignore
+        return target if target else typechecked # type: ignore
+
 def _repr_type_str(arg_object: Any) -> str:
     ''' Generic repr function that types the type and then the str(object) '''
     return f"{type(arg_object)} which has str(self):\n{str(arg_object)}"
-_file_type = Union[str, pathlib.Path]
-_file_type_extended = Union[str, pathlib.Path, List[str], List[pathlib.Path], '_files', None]
-_directory_type = Union[str, pathlib.Path]
-_directory_type_extended = Union[str, pathlib.Path, None]
+type _file_type = Union[str, pathlib.Path]
+type _file_type_extended = Union[str, pathlib.Path, List[str], List[pathlib.Path], '_files', None]
+type _directory_type = Union[str, pathlib.Path]
+type _directory_type_extended = Union[str, pathlib.Path, None]
+
+def SList_indexed(self) -> str:
+    """ Return a list with the index next to it """
+    res = ""
+    for i, item in enumerate(self.list):
+        res += f"{i}: {item}\n"
+    return res
+
+# SList.indexed = SList_indexed
+# SList.__repr__ = SList.indexed
+
+# TODO: Rework so that ls is a _files object that gets updated on every call while que is static
+
+# from xonsh.tools import unthreadable
+# @unthreadable
+# def _xonsh_ls(arg_args: list[str]) -> int:
+#     ''' Testing aliases["lss"] = ns.ls'''
+#     import glob
+    
+#     print(f"arg_args:\n{arg_args}")
+#     if not arg_args:
+#         arg_args = ["*"]
+    
+#     l_files = []
+#     for l_file in arg_args:
+#         l_files.extend(glob.glob(l_file))
+#     for idx, l_file in enumerate(l_files):
+#         full_path = cwd() / l_file
+#         print(f"[{idx:02}] {full_path}")
+
+#     return 0
+
+
+
+# # @unthreadable
+# def _xonsh_more(arg_args: list[str], arg_stdin, arg_stdout) -> int:
+#     for line in arg_stdin:
+#         print(f"line: {line.strip()}")
+#     return 0
+
 
 class _files:
-    _selected: List[str] = []
+    """ A dict like object that have extra functions TODO: Should it be a list of pathlib.Path objects? """
+    _selected: list[str] = []
 
     def __init__(self, arg_file_pattern: _file_type_extended = None,
                        arg_recursive: bool = False,
@@ -99,27 +167,25 @@ class _files:
         self._selected = []
         return 0
 
+    @typechecked
     def select(self, arg_file_pattern: _file_type_extended = None,
                      arg_recursive: bool = False,
                      arg_supress_errors: bool = False,
                      arg_debug: bool = False
                 ) -> int:
-        ''' Makes a new selection of files (clear the old selection) and returns the number of files added
-
-            # TODO: If the arg_file_pattern starts with a ! then run that with os.system() and parse the result
-        '''
+        ''' Makes a new selection of files (clear the old selection) and returns the number of files added '''
         if arg_file_pattern is None:
             return self.clear()
 
-        if isinstance(arg_file_pattern, _files):
+        elif isinstance(arg_file_pattern, _files):
             self.clear()
             self += arg_file_pattern
             return len(self)
 
-        if isinstance(arg_file_pattern, pathlib.Path):
+        elif isinstance(arg_file_pattern, pathlib.Path):
             arg_file_pattern = str(arg_file_pattern)
 
-        if isinstance(arg_file_pattern, list): # TODO: I Don't like this solution. Make it nicer.
+        elif isinstance(arg_file_pattern, list): # TODO: I Don't like this solution. Make it nicer.
             self._selected = []
             for l_item in arg_file_pattern:
                 l_new_files = hu.adv_glob(arg_paths=l_item,
@@ -130,7 +196,7 @@ class _files:
             self.sort()
             return len(self)
 
-        if isinstance(arg_file_pattern, str) and arg_file_pattern.startswith('http'):
+        elif isinstance(arg_file_pattern, str) and arg_file_pattern.startswith('http'):
             l_new_files = [arg_file_pattern]
         else:
             l_new_files = hu.adv_glob(arg_paths=arg_file_pattern,
@@ -143,6 +209,7 @@ class _files:
 
     __call__ = select
 
+    @typechecked
     def sort(self, arg_sort_by: str = "alphabetical"):
         ''' Sort the files in alhpabetic order.
 
@@ -154,6 +221,7 @@ class _files:
         if use_natsort:
             self._selected = natsort.natsorted(self._selected)
 
+    @typechecked
     def __add__(self, arg_adding: Union[str, pathlib.Path, List[str], _files]) -> _files:
         if isinstance(arg_adding, pathlib.Path):
             arg_adding = str(arg_adding)
@@ -167,6 +235,7 @@ class _files:
             raise ValueError(f'Cannot add {type(arg_adding)}')
         return self
 
+    @typechecked
     def __sub__(self, arg_subing: Union[str, pathlib.Path, List[str], _files]) -> _files:
         if isinstance(arg_subing, pathlib.Path):
             arg_subing = str(arg_subing)
@@ -182,6 +251,7 @@ class _files:
         self._selected = [file for file in self._selected if file not in _files_to_remove]
         return self
 
+    @typechecked
     def add(self, arg_file_pattern: Union[str, pathlib.Path, List[str], None] = None,
                   arg_recursive: bool = False,
                   arg_supress_errors: bool = False,
@@ -194,13 +264,15 @@ class _files:
         self += _new_files
         return len(_new_files)
 
-    def prioritize(self, arg_file: Union[str, pathlib.Path]):
+    @typechecked
+    def prioritize(self, arg_file: _file_type, arg_index: int = 0):
         ''' Put this file first in the list '''
         try:
-            self._selected.insert(0, self._selected.pop(self._selected.index(str(arg_file))))
+            self._selected.insert(arg_index, self._selected.pop(self._selected.index(str(arg_file))))
         except ValueError:
             hu.warning_print(f"Could NOT find the file '{arg_file}'")
 
+    @typechecked
     def remove_by_regexp(self, arg_regexp: str, arg_regexp_flags: int = re.IGNORECASE) -> int:
         ''' If you have a large selection of files and want to remove some of them
 
@@ -217,6 +289,7 @@ class _files:
         self._selected = [file for file in self._selected if not _regexp.fullmatch(file)]
         return _len_before - len(self._selected)
 
+    @typechecked
     def save_selection_to_file(self, arg_filename: Union[str, pathlib.Path, None] = None, arg_as_json: bool = False) -> bool:
         ''' Save the current file dict to a file.
 
@@ -231,6 +304,7 @@ class _files:
             return hu.dict_dump_to_json_file(arg_dict=self._selected, arg_filename=arg_filename)
         return hu.text_write_whole_file(arg_filename=arg_filename, arg_text='\n'.join(self._selected))
 
+    @typechecked
     def load_selection_from_file(self, arg_filename_or_url: Union[str, pathlib.Path]) -> int:
         ''' If you have a file saved with each row is a full file path, then this can load that.
             The saved file list can also be a valid JSON.
@@ -253,9 +327,11 @@ class _files:
         self._selected = _list_split
         return len(self._selected)
 
+    @typechecked
     def _json_get(self) -> str:
         return hu.dict_to_json_string_pretty(self._selected)
 
+    @typechecked
     def _json_set(self, arg_json: str) -> bool:
         ''' Try to parse the input str as JSON and validate that it's a list '''
         try:
@@ -271,6 +347,7 @@ class _files:
 
     json = property(fget=_json_get, fset=_json_set, doc='Handle the selected files as a JSON str') # type: ignore
 
+    @typechecked
     def _table(self) -> bool:
         ''' Print the files as a table '''
         if not use_prettytable:
@@ -289,6 +366,7 @@ class _files:
 
     table = property(fget=_table, doc='Show the selected files in nice table')
 
+    @typechecked
     def system(self, arg_command: str, arg_dry_run: bool = False) -> bool:
         ''' Run neoshell.system() Which in the end lands in os.system() on all files. Use the string %file in the command to replace this by the filename
 
@@ -296,70 +374,36 @@ class _files:
         '''
         return system(arg_command=arg_command, arg_files=self, arg_dry_run=arg_dry_run)
 
+    @typechecked
     def __len__(self) -> int:
         return len(self._selected)
 
+    @typechecked
     def __iter__(self) -> Iterator:
         ''' Allows for code like: for file in neoshell.files: to work '''
         return iter(self._selected)
 
+    @typechecked
     def __next__(self, arg_iterator: Iterator) -> str:
         ''' Allows for code like: for file in neoshell.files: to work '''
         return next(arg_iterator)
 
+    @typechecked
+    def __getitem__(self, arg_index: int) -> str:
+        return self._selected[arg_index]
+
+    @typechecked
     def __str__(self) -> str:
         return self._json_get()
 
+    @typechecked
     def __repr__(self) -> str:
         return _repr_type_str(self)
 
-files = _files()
+que = _files()
+ls = _files()
 
-class _ls:
-    ''' TODO: Is this sane? '''
-    _last_ls: _files = _files()
-
-    def __init__(self, arg_pattern: Union[str, None] = None):
-        del arg_pattern # TODO: Not used yet
-
-    def list_files(self, arg_file_pattern: Union[str, pathlib.Path, List[str], None] = None,
-                         arg_recursive: bool = False,
-                         arg_supress_errors: bool = False,
-                         arg_debug: bool = False
-                   ) -> _files:
-        if not arg_file_pattern:
-            arg_file_pattern = '*'
-        self._last_ls.select(arg_file_pattern=arg_file_pattern, arg_recursive=arg_recursive, arg_supress_errors=arg_supress_errors, arg_debug=arg_debug)
-        print(str(self._last_ls))
-        return self._last_ls
-
-    __call__ = list_files
-
-
-    def __repr__(self) -> str:
-        _in_jupyter = False
-        try:
-            info = hu._file_and_line_number(18)
-            function_name = f"{os.path.splitext(os.path.basename(info.filename))[0]}.{info.function}"
-            _in_jupyter = function_name == "ipkernel.do_execute"
-            if _in_jupyter:
-                hu.log_print("We are in Jupyter")
-        except IndexError:
-            hu.log_print("We are NOT in Jupyter")
-
-        hu.timestamped_print(f"cwd: {cwd()}")
-        self.list_files()
-
-
-
-
-
-
-
-        self._last_ls = _files('asdasda')
-        return "\n".join(self._last_ls)
-ls = _ls()
-
+@typechecked
 def cwd(arg_new_current_working_directory: _directory_type_extended = None) -> pathlib.Path:
     ''' Gets (or sets) the current working directory '''
     if arg_new_current_working_directory:
@@ -373,6 +417,7 @@ def cwd(arg_new_current_working_directory: _directory_type_extended = None) -> p
 
 cd = cwd # TODO: Is this a bad idea? Linux user will not like that cd doesn't take them to home. Make it a config
 
+@typechecked
 def system(arg_command: str, arg_files: _file_type_extended = None, arg_dry_run: bool = False) -> bool:
     ''' Run the command in the OS with the os.system()
 
@@ -381,7 +426,7 @@ def system(arg_command: str, arg_files: _file_type_extended = None, arg_dry_run:
     if '%file' in arg_command:
         if not arg_files:
             hu.warning_print(f"No selected files, suggested files are the ones in the current working directory: {cwd()}")
-            l_files = _files('*.*')
+            l_files = _files('*')
             hu.timestamped_print(str(l_files))
             _t = ih.inputtimeout(arg_prompt=hu.timestamped_line('Is this OK? [Y/n]'), arg_timeout_in_seconds=30.0, arg_default_return_value='Y')
             suggestion_ok = _t == '' or _t.lower().startswith('y')
@@ -418,14 +463,17 @@ def system(arg_command: str, arg_files: _file_type_extended = None, arg_dry_run:
         os.system(arg_command)
     return True # TODO: See if we can make a smarter return value depending on what os.system() returned
 
+@typechecked
 def home() -> pathlib.Path:
     ''' Get the users home directory '''
     return pathlib.Path.home()
 
-def exists(arg_path: Union[str, pathlib.Path]) -> bool:
+@typechecked
+def exists(arg_path: _file_type) -> bool:
     ''' Return true if the file/directory exists '''
     return pathlib.Path(arg_path).exists()
 
+@typechecked
 def rename_files_to_good_names(arg_files: _file_type_extended, arg_debug: bool = False) -> bool:
     ''' Rename files to something that is OS safe. See harding_utils.smart_filesystem_safe_path()
     # TODO: This function is not working
@@ -435,7 +483,7 @@ def rename_files_to_good_names(arg_files: _file_type_extended, arg_debug: bool =
         return False
 
     l_files = _files(arg_files) # TODO: Make sure that the _files ctor can handle all kinds of weird input
-    hu.log_print(l_files, arg_debug)
+    hu.log_print(str(l_files), arg_debug)
     for l_file in l_files:
         l_file = l_file.lower() # TODO: Linux vs Windows in case sensitive filenames? YIKES
         l_better_filename: str = hu.smart_filesystem_safe_path(l_file).lower()
@@ -444,13 +492,21 @@ def rename_files_to_good_names(arg_files: _file_type_extended, arg_debug: bool =
         else:
             print(f"Rename {l_file} --> {l_better_filename}")
 
-
-
 # TODO: def copy()
 # TODO: def move()
 # TODO: def dir() # Det skall gå att hänvisa till en ls för att lägga till i selected
 # TODO: def del()
 # TODO: def os.system()
 
+@typechecked
+def _reload(arg_module: Union[str, ModuleType, None] = None):
+    ''' Internal function. During development, this is nice to have '''
+
+    import importlib
+    import sys
+
+    l_module: str = arg_module if isinstance(arg_module, str) else getattr(arg_module, '__name__', __name__)
+    return importlib.reload(sys.modules[l_module])
+
 if __name__ == "__main__":
-    print("This is part of neoshell and is not suppose to be used from the command line")
+    print("This is part of neoshell and is not suppose to be used from the command line. Launch jupyter-console and import neoshell as ns")
