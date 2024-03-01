@@ -50,8 +50,9 @@ p = subprocess.Popen(args) # Success!
 
 """
 from __future__ import annotations
+from collections.abc import Iterable
 
-__version__ = 240217_185412
+__version__ = 240301_200354
 __author__ = "Harding"
 __description__ = __doc__
 __copyright__ = "Copyright 2024"
@@ -67,13 +68,17 @@ import pathlib
 import re
 import json
 import time
+import datetime
+import subprocess
 from types import ModuleType
 from typing import TypeVar
 import numpy as np
 import harding_utils as hu
 import inputtimeout_harding as ih
 
-# from IPython.utils.text import SList
+
+_VERSION_STRING = f"NeoShell v{__version__} by {__author__}"
+
 
 use_natsort = True
 try:
@@ -89,7 +94,7 @@ except ImportError:
     use_prettytable = False
     hu.warning_print("Module prettytable not installed, this module is not required but strongly recommended. pip install prettytable")
 
-STRICT_TYPES = True # If you want to have stict type checking: pip install typeguard
+STRICT_TYPES = False # If you want to have stict type checking: pip install typeguard
 try:
     if not STRICT_TYPES:
         raise ImportError("Skipping the import of typeguard reason: STRICT_TYPES == False")
@@ -184,8 +189,10 @@ class _files:
 
         elif isinstance(arg_file_pattern, pathlib.Path):
             arg_file_pattern = str(arg_file_pattern)
-
-        elif isinstance(arg_file_pattern, list): # TODO: I Don't like this solution. Make it nicer.
+        elif isinstance(arg_file_pattern, _command):
+            arg_file_pattern = arg_file_pattern.result_as_list_of_str
+        
+        if isinstance(arg_file_pattern, list): # TODO: I Don't like this solution. Make it nicer.
             self._selected = []
             for l_item in arg_file_pattern:
                 l_new_files = hu.adv_glob(arg_paths=l_item,
@@ -401,7 +408,154 @@ class _files:
         return _repr_type_str(self)
 
 que = _files()
-ls = _files()
+
+class _command:
+    command: str
+    _result: subprocess.CompletedProcess | None = None
+    _time_start: datetime.datetime | None = None
+    _time_end: datetime.datetime | None = None
+
+    @property
+    def result_as_list_of_str(self) -> list[str]:
+        if self._result is None:
+            _ = self.run()
+        return hu.list_from_str(self._result.stdout, arg_re_splitter="[\r]|[\n]")
+    
+    @property
+    def result_as_str(self) -> str:
+        if self._result is None:
+            _ = self.run()
+        return self._result.stdout
+
+    @property
+    def timedelta(self) -> datetime.timedelta:
+        ''' Seconds it took to run the command '''
+        if self._result is None:
+            _ = self.run()
+        return self._time_end - self._time_start
+    
+    @property
+    def time_start(self) -> datetime.datetime:
+        ''' The timestamp when the command started to run'''
+        return self._time_start
+
+    @property
+    def time_end(self) -> datetime.datetime:
+        ''' The timestamp when the command was finished running '''
+        return self._time_end
+
+    def __iter__(self) -> Iterator:
+        ''' Allows for code like: for file in to work '''
+        return iter(self.result_as_list_of_str)
+
+    def __next__(self, arg_iterator: Iterator) -> str:
+        ''' Allows for code like: for file in neoshell.files: to work '''
+        return next(arg_iterator)
+
+    def __getitem__(self, arg_index: int) -> str:
+        return self.result_as_list_of_str[arg_index]
+
+    def regexp(self, arg_regexp: str) -> list[str]:
+        ''' filter the result on this regexp. If you give a caprutre group, then save only that one '''
+        res = []
+        for line in self.result_as_list_of_str:
+            l_m = re.fullmatch(arg_regexp, line)
+            if l_m:
+                res.append(l_m.group(1) if l_m.groups() else line)
+        return res
+
+    def __init__(self, arg_command_name: str | _command) -> None:
+        if isinstance(arg_command_name, _command):
+            arg_command_name = arg_command_name.command
+        
+        self.command = arg_command_name
+        
+    def __sub__(self, other: _command | str) -> _command:
+        if self.command == _VERSION_STRING:
+            return _command(other)
+        elif isinstance(other, str):
+            return _command(self.command + " -" + other)
+        elif isinstance(other, _command):
+            return _command(self.command + " -" + other.command)
+        elif isinstance(other, Iterable):
+            return _command(self.command + " -" + " -".join(other))
+        return _command(self.command + " -" + str(other))
+
+    def __truediv__(self, other: _command | str) -> _command:
+        if self.command == _VERSION_STRING:
+            return _command(other)
+        elif isinstance(other, str):
+            return _command(self.command + " /" + other)
+        elif isinstance(other, _command):
+            return _command(self.command + " /" + other.command)
+        elif isinstance(other, Iterable):
+            return _command(self.command + " /" + " /".join(other))
+        return _command(self.command + " /" + str(other))
+
+    def __add__(self, other: str | Iterable) -> _command:
+        ''' + is used for literal strings '''
+        if self.command == _VERSION_STRING:
+            return _command(other)
+        elif isinstance(other, str):
+            return _command(self.command + " " + other)
+        elif isinstance(other, _command):
+            return _command(self.command + " " + other.command)
+        elif isinstance(other, Iterable):
+            return _command(self.command + " " + " ".join(other))
+        return _command(self.command + " " + str(other))
+
+    def __or__(self, other: _command | str | Iterable) -> _command:
+        # hu.log_print(f"type: {type(other)}")
+        if self.command == _VERSION_STRING:
+            return _command(other)
+        elif isinstance(other, str):
+            return _command(self.command + " | " + other)
+        elif isinstance(other, _command):
+            return _command(self.command + " | " + other.command)
+        elif isinstance(other, Iterable):
+            return _command(self.command + " " + " ".join(other))
+        return _command(self.command + " | " + str(other))
+
+    def __neg__(self) -> _command:
+        return _command("-" + self.command)
+
+    # def __call__(self, *args: Any, **kwds: Any) -> subprocess.CompletedProcess:
+    #     # TODO: This one can be many things...
+    #     return _command(self.command + " " + " ".join(args)).run()
+
+    def run(self) -> subprocess.CompletedProcess:
+        self._time_start = datetime.datetime.now()
+        self._result = system(self.command.lstrip())
+        self._time_end = datetime.datetime.now()
+        if isinstance(self._result.stdout, bytes):
+            self._result.stdout = str(self._result.stdout.replace(b"\xFF", b" "), encoding="utf-8", errors="replace")
+        return self._result
+    
+    def __str__(self) -> str:
+        _ = self.run() # Always run when we ask to evaluate the command
+        return self._result.stdout
+
+    def __repr__(self) -> str:
+        return str(self)
+
+# history = [] # TODO: How should this work?
+ns = _command(_VERSION_STRING) # this is a special command used to run a string such as: ns | "ping -n 10 127.0.0.1"
+# sudo = _command("sudo")
+help = _command("help")
+curl = _command("curl")
+findstr = _command("findstr")
+grep = _command("grep")
+cat = _command("cat")
+dir = _command("dir")
+b = _command("b")
+i = _command("i")
+s = _command("s")
+ls = _command("ls")
+l = _command("l")
+a = _command("a")
+x = _command("x")
+# pwd is already set in Jupyter-console
+# cd is already set in Jupyter-console
 
 @typechecked
 def cwd(arg_new_current_working_directory: _directory_type_extended = None) -> pathlib.Path:
@@ -415,10 +569,8 @@ def cwd(arg_new_current_working_directory: _directory_type_extended = None) -> p
         os.chdir(str(arg_new_current_working_directory))
     return pathlib.Path.cwd()
 
-cd = cwd # TODO: Is this a bad idea? Linux user will not like that cd doesn't take them to home. Make it a config
-
 @typechecked
-def system(arg_command: str, arg_files: _file_type_extended = None, arg_dry_run: bool = False) -> bool:
+def system(arg_command: str, arg_files: _file_type_extended = None, arg_dry_run: bool = False) -> subprocess.CompletedProcess:
     ''' Run the command in the OS with the os.system()
 
         # TODO: Allow for a List[str] to be passed as arg_command?
@@ -457,11 +609,14 @@ def system(arg_command: str, arg_files: _file_type_extended = None, arg_dry_run:
 
         return all_ok
 
-    hu.timestamped_print(f"Running command:  {hu.console_color(arg_command, arg_color='OKBLUE')}", arg_force_flush=True)
+    hu.log_print(f"Running command:  {hu.console_color(arg_command, arg_color='OKBLUE')}", arg_force_flush=True)
     time.sleep(0.01)
     if not arg_dry_run:
-        os.system(arg_command)
-    return True # TODO: See if we can make a smarter return value depending on what os.system() returned
+        res = subprocess.run(args=arg_command, shell=True, capture_output=True)
+        # hu.log_print(str(res))
+        return res
+        
+    return "< dry run >"
 
 @typechecked
 def home() -> pathlib.Path:
