@@ -75,10 +75,9 @@ from typing import TypeVar
 import numpy as np
 import harding_utils as hu
 import inputtimeout_harding as ih
-
+from IPython.utils.text import SList
 
 _VERSION_STRING = f"NeoShell v{__version__} by {__author__}"
-
 
 use_natsort = True
 try:
@@ -114,45 +113,20 @@ type _file_type_extended = Union[str, pathlib.Path, List[str], List[pathlib.Path
 type _directory_type = Union[str, pathlib.Path]
 type _directory_type_extended = Union[str, pathlib.Path, None]
 
-def SList_indexed(self) -> str:
-    """ Return a list with the index next to it """
+def SList_indexed(self, arg_num_cols:int = 5, arg_lines_per_col:int = 10) -> str:
+    """ Return a list with the index next to it # TODO: Not fully working yet """
     res = ""
     for i, item in enumerate(self.list):
+        if i > arg_num_cols * arg_lines_per_col:
+            return res + f"< {len(self.list) - arg_num_cols * arg_lines_per_col} more items... >"
+        
         res += f"{i}: {item}\n"
     return res
 
-# SList.indexed = SList_indexed
-# SList.__repr__ = SList.indexed
-
-# TODO: Rework so that ls is a _files object that gets updated on every call while que is static
-
-# from xonsh.tools import unthreadable
-# @unthreadable
-# def _xonsh_ls(arg_args: list[str]) -> int:
-#     ''' Testing aliases["lss"] = ns.ls'''
-#     import glob
-    
-#     print(f"arg_args:\n{arg_args}")
-#     if not arg_args:
-#         arg_args = ["*"]
-    
-#     l_files = []
-#     for l_file in arg_args:
-#         l_files.extend(glob.glob(l_file))
-#     for idx, l_file in enumerate(l_files):
-#         full_path = cwd() / l_file
-#         print(f"[{idx:02}] {full_path}")
-
-#     return 0
-
-
-
-# # @unthreadable
-# def _xonsh_more(arg_args: list[str], arg_stdin, arg_stdout) -> int:
-#     for line in arg_stdin:
-#         print(f"line: {line.strip()}")
-#     return 0
-
+SList.indexed = SList_indexed
+SList.i = SList_indexed
+SList.__str__ = SList.indexed
+SList.__repr__ = SList.indexed
 
 class _files:
     """ A dict like object that have extra functions TODO: Should it be a list of pathlib.Path objects? """
@@ -273,7 +247,7 @@ class _files:
 
     @typechecked
     def prioritize(self, arg_file: _file_type, arg_index: int = 0):
-        ''' Put this file first in the list '''
+        ''' Move the internal order of the file '''
         try:
             self._selected.insert(arg_index, self._selected.pop(self._selected.index(str(arg_file))))
         except ValueError:
@@ -374,7 +348,7 @@ class _files:
     table = property(fget=_table, doc='Show the selected files in nice table')
 
     @typechecked
-    def system(self, arg_command: str, arg_dry_run: bool = False) -> bool:
+    def system(self, arg_command: str, arg_dry_run: bool = False) -> subprocess.CompletedProcess:
         ''' Run neoshell.system() Which in the end lands in os.system() on all files. Use the string %file in the command to replace this by the filename
 
             Set the argument arg_dry_run to True to see the commands that would be executed without actually executing them.
@@ -419,6 +393,7 @@ class _command:
     def result_as_list_of_str(self) -> list[str]:
         if self._result is None:
             _ = self.run()
+        
         return hu.list_from_str(self._result.stdout, arg_re_splitter="[\r]|[\n]")
     
     @property
@@ -445,7 +420,7 @@ class _command:
         return self._time_end
 
     def __iter__(self) -> Iterator:
-        ''' Allows for code like: for file in to work '''
+        ''' Allows for code like: "for x in" to work '''
         return iter(self.result_as_list_of_str)
 
     def __next__(self, arg_iterator: Iterator) -> str:
@@ -539,14 +514,16 @@ class _command:
         return str(self)
 
 # history = [] # TODO: How should this work?
+
+# Think of these object as: This Python symbol is now passed to the underlying console handler as default
 ns = _command(_VERSION_STRING) # this is a special command used to run a string such as: ns | "ping -n 10 127.0.0.1"
 # sudo = _command("sudo")
-help = _command("help")
+# help = _command("help")
 curl = _command("curl")
 findstr = _command("findstr")
 grep = _command("grep")
 cat = _command("cat")
-dir = _command("dir")
+d = _command("d") # Windows users need a d.bat that contains: dir %*
 b = _command("b")
 i = _command("i")
 s = _command("s")
@@ -554,6 +531,7 @@ ls = _command("ls")
 l = _command("l")
 a = _command("a")
 x = _command("x")
+# Jupyter has a special list name _dh that remembers what directories you visited
 # pwd is already set in Jupyter-console
 # cd is already set in Jupyter-console
 
